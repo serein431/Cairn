@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
 import logging
 import threading
@@ -12,6 +13,7 @@ from requests.adapters import HTTPAdapter
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary, Settings
 
 LOG = logging.getLogger(__name__)
+ADMIN_TOKEN = os.environ.get("CAIRN_ADMIN_TOKEN", "")
 
 
 class ProtocolError(RuntimeError):
@@ -153,6 +155,8 @@ class CairnClient:
             return session
 
         session = requests.Session()
+        if ADMIN_TOKEN:
+            session.headers["Authorization"] = f"Bearer {ADMIN_TOKEN}"
         adapter = HTTPAdapter(pool_connections=64, pool_maxsize=64, pool_block=False)
         session.mount("http://", adapter)
         session.mount("https://", adapter)

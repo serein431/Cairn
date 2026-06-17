@@ -7,6 +7,8 @@ services:
     container_name: cairn-server
     ports:
       - "8000:8000"
+    environment:
+      - CAIRN_ADMIN_TOKEN=${CAIRN_ADMIN_TOKEN:-}
     volumes:
       - ./datas/cairn/:/root/.local/share/cairn/
     healthcheck:
@@ -14,7 +16,7 @@ services:
         - "CMD"
         - "python"
         - "-c"
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/projects', timeout=5)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/settings', timeout=5)"
       interval: 10s
       timeout: 5s
       retries: 12
@@ -27,6 +29,8 @@ services:
       dockerfile: Dockerfile
     image: cairn-app
     container_name: cairn-dispatcher
+    environment:
+      - CAIRN_ADMIN_TOKEN=${CAIRN_ADMIN_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./dispatch.yaml:/cairn/dispatch.yaml

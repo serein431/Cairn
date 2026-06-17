@@ -4,3 +4,9 @@ __pycache__/
 .playwright-cli/
 datas/
 dispatch.yaml
+.env
+.env.*
+.cairn_runs/
+logs/
+logs_*/
+*.log
