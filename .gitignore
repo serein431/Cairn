@@ -1,6 +1,8 @@
 .vscode/
 .DS_Store
 __pycache__/
+*.pyc
+*.pyo
 .playwright-cli/
 datas/
 dispatch.yaml
@@ -10,3 +12,6 @@ dispatch.yaml
 logs/
 logs_*/
 *.log
+*.tsv
+results/
+trajectories/
