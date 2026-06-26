@@ -41,6 +41,8 @@ tasks:
     conclude_timeout: 90
 
 container:
+  # Set to "local" to run worker commands directly on the host (no Docker needed).
+  # runner: "local"
   # Base worker container. The dispatcher execs agent commands inside one container per project.
   image: "ghcr.io/oritera/cairn-worker-container:latest"
   network_mode: "host"
@@ -55,8 +57,11 @@ container:
 workers:
   # Worker priority is ascending: lower numbers are preferred first.
   # max_running is per-worker concurrency. Slower backends such as Pi usually benefit from lower values.
+  # Optional "model" field sets the --model flag for the CLI.
+  # When set, adapter-specific env vars (ANTHROPIC_MODEL, CODEX_MODEL) are not required.
   - name: "claudecode_deepseek-v4-pro"
     type: "claudecode"
+    # model: "claude-opus-4-5"
     task_types: [bootstrap, reason, explore]
     max_running: 2
     priority: 0

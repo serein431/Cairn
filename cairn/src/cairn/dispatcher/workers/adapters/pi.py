@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from cairn.dispatcher.config import WorkerConfig
-from cairn.dispatcher.workers.base import DriverResult, WorkerDriver
+from cairn.dispatcher.workers.base import DriverResult, TrajectoryStep, WorkerDriver
 
 
 class PiDriver(WorkerDriver):
@@ -161,6 +161,75 @@ class PiDriver(WorkerDriver):
             if isinstance(payload, dict):
                 events.append(payload)
         return events
+
+    def extract_trajectory(self, session_data: str) -> list[TrajectoryStep]:
+        """Parse Pi agent JSONL session into TrajectorySteps.
+
+        Pi session JSONL has messages with roles: assistant (tool_use), toolResult.
+        We pair each tool_use with its corresponding toolResult by toolCallId.
+        """
+        events = self._iter_events(session_data)
+        # collect tool calls and results
+        pending_calls: dict[str, dict[str, Any]] = {}  # toolCallId -> {name, input}
+        steps: list[TrajectoryStep] = []
+        step_id = 0
+
+        for event in events:
+            msg = event.get("message", {})
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "assistant" and isinstance(content, list):
+                thinking_text = ""
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "thinking":
+                        thinking_text = item.get("thinking", "")
+                    elif item.get("type") == "text":
+                        thinking_text = thinking_text or item.get("text", "")
+                    elif item.get("type") in ("tool_use", "toolCall"):
+                        call_id = item.get("toolCallId") or item.get("id", "")
+                        tool_name = item.get("name", "")
+                        tool_input = item.get("input") or item.get("arguments") or {}
+                        if isinstance(tool_input, dict):
+                            action = tool_input.get("command", "") or tool_input.get("content", "") or tool_input.get("path", "") or json.dumps(tool_input, ensure_ascii=False)[:2000]
+                        else:
+                            action = str(tool_input)[:2000]
+                        pending_calls[call_id] = {
+                            "name": tool_name,
+                            "action": action,
+                            "thinking": thinking_text,
+                        }
+                        thinking_text = ""
+
+            elif role == "toolResult" and isinstance(content, list):
+                call_id = msg.get("toolCallId", "")
+                observation_parts: list[str] = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        observation_parts.append(item.get("text", ""))
+                observation = "\n".join(observation_parts)[:8000]
+
+                call_info = pending_calls.pop(call_id, None)
+                if call_info:
+                    step_id += 1
+                    steps.append(TrajectoryStep(
+                        step_id=step_id,
+                        action=call_info["action"],
+                        observation=observation,
+                        tool_type=call_info["name"],
+                        thinking=call_info.get("thinking") or None,
+                    ))
+                else:
+                    step_id += 1
+                    steps.append(TrajectoryStep(
+                        step_id=step_id,
+                        action=f"[unknown tool call {call_id}]",
+                        observation=observation,
+                    ))
+
+        return steps
 
     @staticmethod
     def _models_json(worker: WorkerConfig) -> str:

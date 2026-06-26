@@ -4,7 +4,7 @@ import abc
 import re
 import shlex
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from cairn.dispatcher.config import WorkerConfig
 
@@ -15,6 +15,15 @@ class DriverResult:
     session: str | None = None
 
 
+@dataclass(slots=True)
+class TrajectoryStep:
+    step_id: int
+    action: str
+    observation: str | None = None
+    tool_type: str | None = None
+    thinking: str | None = None
+
+
 class WorkerDriver(abc.ABC):
     type_name: str
 
@@ -23,6 +32,12 @@ class WorkerDriver(abc.ABC):
 
     def prepare_session(self) -> str | None:
         return None
+
+    @staticmethod
+    def model_args(worker: WorkerConfig) -> list[str]:
+        if worker.model:
+            return ["--model", worker.model]
+        return []
 
     def build_startup_healthcheck(self, worker: WorkerConfig) -> list[str]:
         return self.build_healthcheck(worker)
@@ -47,6 +62,16 @@ class WorkerDriver(abc.ABC):
 
     def extract_response_text(self, stdout: str, stderr: str) -> str:
         return stdout
+
+    def extract_trajectory(self, session_data: str) -> list[TrajectoryStep]:
+        """Parse raw session log data into a list of TrajectorySteps.
+
+        Each driver implements its own parsing for its log format.
+        ``session_data`` is the raw text content of the session log file
+        (JSONL for pi/claudecode, or stdout capture for others).
+        Returns an empty list if parsing fails or is not supported.
+        """
+        return []
 
 
 class SeedSessionDriver(WorkerDriver):
