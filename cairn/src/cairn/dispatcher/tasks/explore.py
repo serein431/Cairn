@@ -18,6 +18,7 @@ from cairn.dispatcher.tasks.common import (
     preview,
     run_healthcheck,
     run_worker_process,
+    save_session_log,
     task_healthcheck_enabled,
     write_conclude_result,
     write_graph_snapshot_reference,
@@ -245,6 +246,8 @@ def run_explore_task(
         best_effort_release(client, project.project.id, intent.id, worker.name)
         return "failed"
     finally:
+        if 'container_name' in dir() and 'session' in dir():
+            save_session_log(container_manager, container_name, project.project.id, worker.name, session, phase="explore")
         lease.stop()
 
 

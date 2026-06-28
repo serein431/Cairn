@@ -22,6 +22,7 @@ from cairn.dispatcher.tasks.common import (
     preview,
     run_healthcheck,
     run_worker_process,
+    save_session_log,
     task_healthcheck_enabled,
     write_conclude_result,
     write_conclude_result_with_fact_id,
@@ -107,6 +108,7 @@ def run_bootstrap_task(
         session = driver.prepare_session()
         execute = driver.build_execute(worker, prompt, session)
         session = execute.session
+        bootstrap_timeout = config.tasks.bootstrap.initial_timeout or config.tasks.bootstrap.timeout
         execute_started = time.perf_counter()
         first = run_worker_process(
             container_manager,
@@ -114,7 +116,7 @@ def run_bootstrap_task(
             worker,
             execute.argv,
             phase="bootstrap",
-            timeout_seconds=config.tasks.bootstrap.timeout,
+            timeout_seconds=bootstrap_timeout,
             lease=lease,
             cancellation=cancellation,
         )
@@ -238,6 +240,8 @@ def run_bootstrap_task(
         best_effort_release(client, project.project.id, intent.id, worker.name)
         return "failed"
     finally:
+        if 'container_name' in dir() and 'session' in dir():
+            save_session_log(container_manager, container_name, project.project.id, worker.name, session, phase="bootstrap")
         lease.stop()
 
 

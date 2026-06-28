@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.protocol.client import CairnClient
@@ -16,6 +18,7 @@ HEALTHCHECK_COMMUNICATE_GRACE_SECONDS = 10
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
 GRAPH_SNAPSHOT_ROOT = "/tmp/cairn-prompts"
+TRAJECTORY_DIR = Path(os.environ.get("CAIRN_TRAJECTORY_DIR", "trajectories"))
 LOG = logging.getLogger(__name__)
 
 
@@ -261,6 +264,60 @@ def write_conclude_result_with_fact_id(
         )
     best_effort_release(client, project_id, intent_id, worker_name)
     return ConcludeWriteResult(status="failed", fact_id=None)
+
+
+def save_session_log(
+    container_manager: ContainerManager,
+    container_name: str,
+    project_id: str,
+    worker_name: str,
+    session: str | None,
+    *,
+    phase: str,
+) -> None:
+    """Extract session log from the worker container and persist to disk.
+
+    Called inside the task function before returning, while the container is
+    still running and the session ID is in scope. This ensures trajectory
+    data survives container cleanup.
+    """
+    if not session:
+        return
+    try:
+        # find session log files in the container
+        find_result = container_manager.build_exec_process(
+            container_name, {}, ["find", "/tmp/cairn-pi", "-name", "*.jsonl", "-o",
+                                 "-path", "*/.claude/projects/*/sessions/*.jsonl"],
+        )
+        find_result.start()
+        find_output = find_result.communicate(timeout=10)
+        if find_output.returncode != 0 or not find_output.stdout.strip():
+            return
+
+        out_dir = TRAJECTORY_DIR / project_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for session_path in find_output.stdout.strip().split("\n"):
+            session_path = session_path.strip()
+            if not session_path:
+                continue
+            cat_result = container_manager.build_exec_process(
+                container_name, {}, ["cat", session_path],
+            )
+            cat_result.start()
+            cat_output = cat_result.communicate(timeout=30)
+            if cat_output.returncode != 0 or not cat_output.stdout:
+                continue
+
+            filename = f"{phase}_{worker_name}_{Path(session_path).name}"
+            dest = out_dir / filename
+            dest.write_text(cat_output.stdout, encoding="utf-8")
+            LOG.info(
+                "saved session log project=%s worker=%s phase=%s path=%s",
+                project_id, worker_name, phase, dest,
+            )
+    except Exception:
+        LOG.debug("failed to save session log project=%s worker=%s", project_id, worker_name, exc_info=True)
 
 
 def best_effort_release(client: CairnClient, project_id: str, intent_id: str, worker_name: str) -> None:

@@ -22,6 +22,7 @@ from cairn.dispatcher.tasks.common import (
     preview,
     run_healthcheck,
     run_worker_process,
+    save_session_log,
     task_healthcheck_enabled,
     write_graph_snapshot_reference,
 )
@@ -290,5 +291,7 @@ def run_reason_task(
         )
         return "success"
     finally:
+        if 'container_name' in dir() and 'session' in dir():
+            save_session_log(container_manager, container_name, project.project.id, worker.name, session, phase="reason")
         lease.stop()
         best_effort_release_reason(client, project.project.id, worker.name)
