@@ -4,7 +4,7 @@
 Runs any benchmark through Cairn by delegating to a benchmark adapter.
 The adapter handles all benchmark-specific logic (discovery, setup, teardown,
 verification). The runner handles all Cairn-specific logic (project creation,
-container pre-creation, file injection, polling, result collection).
+file injection via init_files API, polling, result collection).
 
 Usage:
   python3 benchmarks/benchmark_runner.py cybench
@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,7 +32,6 @@ from adapters.base import ChallengeSpec
 
 CAIRN_SERVER = "http://127.0.0.1:8000"
 ADMIN_TOKEN = "cairn-batch-secret-token"
-CONTAINER_IMAGE = "ghcr.io/oritera/cairn-worker-container:latest"
 TIMEOUT_SECONDS = 900
 POLL_INTERVAL = 10
 
@@ -71,11 +69,26 @@ def _headers():
     return {"Authorization": f"Bearer {ADMIN_TOKEN}", "Content-Type": "application/json"}
 
 
-def create_project(origin: str, goal: str, title: str) -> str:
-    resp = requests.post(
-        f"{CAIRN_SERVER}/projects", headers=_headers(),
-        json={"title": title, "origin": origin, "goal": goal, "bootstrap_enabled": True},
-    )
+def create_project(origin: str, goal: str, title: str, files_dir: Path | None = None) -> str:
+    import base64
+    init_files = []
+    if files_dir and files_dir.exists() and any(files_dir.iterdir()):
+        for f in sorted(files_dir.rglob("*")):
+            if not f.is_file():
+                continue
+            rel_path = f"/tmp/challenge/{f.relative_to(files_dir)}"
+            try:
+                content = f.read_text(encoding="utf-8")
+                encoding = "utf-8"
+            except (UnicodeDecodeError, ValueError):
+                content = base64.b64encode(f.read_bytes()).decode()
+                encoding = "base64"
+            init_files.append({"path": rel_path, "content": content, "encoding": encoding})
+
+    body = {"title": title, "origin": origin, "goal": goal, "bootstrap_enabled": True}
+    if init_files:
+        body["init_files"] = init_files
+    resp = requests.post(f"{CAIRN_SERVER}/projects", headers=_headers(), json=body)
     resp.raise_for_status()
     return resp.json()["project"]["id"]
 
@@ -93,35 +106,6 @@ def stop_project(project_id: str):
     )
 
 
-# ── container pre-creation + file injection ─────────────────────────────
-
-
-def container_name_for(project_id: str) -> str:
-    return f"cairn-dispatch-{project_id.replace('/', '-')}"
-
-
-def precreate_and_inject(project_id: str, files_dir: Path | None):
-    name = container_name_for(project_id)
-    subprocess.run(
-        ["docker", "run", "-d", "--name", name,
-         "--network", "host", CONTAINER_IMAGE, "sleep", "infinity"],
-        capture_output=True, timeout=30,
-    )
-    for _ in range(10):
-        r = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}}", name],
-            capture_output=True, text=True,
-        )
-        if r.stdout.strip() == "true":
-            break
-        time.sleep(0.5)
-    subprocess.run(["docker", "exec", name, "mkdir", "-p", "/tmp/challenge"], capture_output=True, timeout=10)
-    if files_dir and any(files_dir.iterdir()):
-        subprocess.run(
-            ["docker", "cp", f"{files_dir}/.", f"{name}:/tmp/challenge/"],
-            capture_output=True, timeout=30,
-        )
-        LOG.info("injected files into %s:/tmp/challenge/", name)
 
 
 # ── polling ─────────────────────────────────────────────────────────────
@@ -163,7 +147,7 @@ def save_results(path: Path, results: list[dict]):
 
 
 def completed_ids(results: list[dict]) -> set[str]:
-    return {r["challenge_id"] for r in results if r["status"] in ("solved", "unsolved")}
+    return {r["challenge_id"] for r in results if r["status"] in ("solved", "unsolved", "timeout")}
 
 
 # ── run one challenge ───────────────────────────────────────────────────
@@ -183,10 +167,8 @@ def run_one(adapter, challenge: dict, timeout: int) -> Result:
     try:
         spec = adapter.setup(challenge)
 
-        project_id = create_project(spec.origin, spec.goal, f"{adapter.name} - {spec.name} ({spec.category})")
+        project_id = create_project(spec.origin, spec.goal, f"{adapter.name} - {spec.name} ({spec.category})", spec.files_dir)
         LOG.info("created project %s", project_id)
-
-        precreate_and_inject(project_id, spec.files_dir)
 
         status, facts = poll_project(project_id, spec.flag, timeout, adapter, challenge)
 

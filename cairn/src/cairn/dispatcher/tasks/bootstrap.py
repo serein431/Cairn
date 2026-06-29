@@ -50,6 +50,8 @@ def run_bootstrap_task(
     try:
         container_name = container_manager.ensure_running(project.project.id)
 
+        _inject_init_files(container_manager, container_name, project)
+
         if task_healthcheck_enabled(config):
             LOG.info(
                 "starting container exec project=%s intent=%s worker=%s phase=bootstrap_healthcheck timeout=%ss",
@@ -493,3 +495,19 @@ def _write_bootstrap_complete_result(
             total_ms,
         )
     return "success"
+
+
+def _inject_init_files(container_manager, container_name: str, project) -> None:
+    """Inject project init_files into the worker container before execution."""
+    init_files = getattr(project, "init_files", None) or []
+    if not init_files:
+        return
+    import base64
+    for f in init_files:
+        try:
+            if f.encoding == "base64":
+                container_manager.write_binary_file(container_name, f.path, base64.b64decode(f.content))
+            else:
+                container_manager.write_text_file(container_name, f.path, f.content)
+        except Exception as exc:
+            LOG.warning("failed to inject init_file path=%s project=%s error=%s", f.path, project.project.id, exc)

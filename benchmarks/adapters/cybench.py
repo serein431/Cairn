@@ -52,14 +52,30 @@ class CybenchAdapter(BenchmarkAdapter):
 
     def setup(self, challenge: dict) -> ChallengeSpec:
         challenge_dir = Path(challenge["challenge_dir"])
+        data = json.loads((challenge_dir / "challenge.json").read_text())
+        distributed_files = data.get("files", [])
 
-        # 1. run init_script to prepare files + get prompt
+        # 1. copy only officially distributed files (what CTF participants received)
         tmp_dir = Path(tempfile.mkdtemp(prefix=f"cybench_{challenge['name'].replace(' ', '_')}_"))
         self._tmp_dirs[challenge["challenge_id"]] = tmp_dir
 
-        prompt = self._run_init_script(challenge_dir, tmp_dir)
+        if distributed_files:
+            for fpath in distributed_files:
+                src = challenge_dir / fpath
+                if not src.exists():
+                    continue
+                if src.is_dir():
+                    dest = tmp_dir / src.name
+                    shutil.copytree(src, dest, dirs_exist_ok=True)
+                else:
+                    dest = tmp_dir / src.name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest)
 
-        # 2. start docker if needed
+        # 2. get prompt (hard_prompt from challenge.json, not init_script noise)
+        prompt = self._get_prompt(data)
+
+        # 3. start docker if needed
         if challenge.get("has_docker"):
             self._ensure_ctfnet()
             self._start_docker(challenge_dir)
@@ -67,7 +83,7 @@ class CybenchAdapter(BenchmarkAdapter):
             if port:
                 self._wait_for_port(port)
 
-        # 3. rewrite hostnames to localhost
+        # 4. rewrite hostnames to localhost
         target_host = challenge.get("target_host", "")
         if target_host:
             parts = target_host.split(":")
@@ -75,7 +91,10 @@ class CybenchAdapter(BenchmarkAdapter):
                 prompt = prompt.replace(target_host, f"localhost:{parts[1]}")
                 prompt = prompt.replace(parts[0], "localhost")
 
-        origin = prompt.strip() + "\nChallenge files are available at /tmp/challenge/"
+        # 5. only mention files if we actually injected some
+        origin = prompt.strip()
+        if distributed_files:
+            origin += "\nChallenge files are available at /tmp/challenge/"
 
         return ChallengeSpec(
             challenge_id=challenge["challenge_id"],
@@ -85,7 +104,7 @@ class CybenchAdapter(BenchmarkAdapter):
             origin=origin,
             goal="Find and capture the flag.",
             flag=challenge["flag"],
-            files_dir=tmp_dir,
+            files_dir=tmp_dir if distributed_files else None,
             metadata=challenge,
         )
 
@@ -102,21 +121,11 @@ class CybenchAdapter(BenchmarkAdapter):
         if tmp_dir and tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def _run_init_script(self, challenge_dir: Path, tmp_dir: Path) -> str:
-        init_script = challenge_dir / "init_script.sh"
-        if not init_script.exists():
-            data = json.loads((challenge_dir / "challenge.json").read_text())
-            return data.get("hard_prompt", data.get("description", ""))
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["bash", str(init_script), str(tmp_dir), "false"],
-            capture_output=True, text=True, timeout=120, cwd=str(challenge_dir),
-        )
-        prompt = result.stdout.strip()
-        if not prompt:
-            data = json.loads((challenge_dir / "challenge.json").read_text())
-            return data.get("hard_prompt", data.get("description", ""))
-        return prompt
+    @staticmethod
+    def _get_prompt(data: dict) -> str:
+        """Get the agent prompt from challenge.json. Use hard_prompt (minimal info,
+        no vulnerability hints). Fall back to description if hard_prompt is empty."""
+        return data.get("hard_prompt", "") or data.get("description", "")
 
     @staticmethod
     def _ensure_ctfnet():

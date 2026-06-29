@@ -103,6 +103,17 @@ def create_project(body: CreateProjectRequest):
                 )
                 hints.append(Hint(id=hid, content=h.content, creator=h.creator, created_at=now))
 
+        init_files = []
+        if body.init_files:
+            from cairn.server.models import InitFile
+            for idx, f in enumerate(body.init_files, 1):
+                fid = f"file_{idx:03d}"
+                conn.execute(
+                    "INSERT INTO init_files (id, project_id, path, content, encoding) VALUES (?, ?, ?, ?, ?)",
+                    (fid, pid, f.path, f.content, f.encoding),
+                )
+                init_files.append(InitFile(id=fid, path=f.path, content=f.content, encoding=f.encoding))
+
         return ProjectDetail(
             project=ProjectMeta(
                 id=pid,
@@ -118,6 +129,7 @@ def create_project(body: CreateProjectRequest):
             ],
             intents=[],
             hints=hints,
+            init_files=init_files,
         )
 
 
@@ -135,12 +147,18 @@ def get_project(project_id: str):
             "SELECT * FROM hints WHERE project_id = ? ORDER BY created_at",
             (project_id,),
         ).fetchall()
+        init_files_rows = conn.execute(
+            "SELECT id, path, content, encoding FROM init_files WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
 
+        from cairn.server.models import InitFile
         return ProjectDetail(
             project=project_meta_from_row(row),
             facts=[Fact(**dict(f)) for f in facts],
             intents=build_intents(conn, project_id),
             hints=[Hint(**dict(h)) for h in hints],
+            init_files=[InitFile(**dict(r)) for r in init_files_rows],
         )
 
 

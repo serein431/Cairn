@@ -222,6 +222,45 @@ class ContainerManager:
         if not ok:
             raise RuntimeError(f"failed to write container file {path}")
 
+    def write_binary_file(self, container_name: str, path: str, data: bytes) -> None:
+        archive_path, archive = self._binary_file_archive(path, data)
+        container = self._require_container(container_name)
+        try:
+            ok = container.put_archive(archive_path, archive)
+        except DockerException as exc:
+            raise RuntimeError(f"failed to write container file {path}: {exc}") from exc
+        if not ok:
+            raise RuntimeError(f"failed to write container file {path}")
+
+    def copy_local_directory(self, container_name: str, local_path: str, container_dest: str) -> None:
+        """Copy a local directory tree into the container via a tar archive."""
+        from pathlib import Path as _Path
+
+        src = _Path(local_path)
+        if not src.is_dir():
+            raise ValueError(f"local path is not a directory: {local_path}")
+
+        container = self._require_container(container_name)
+        dest = PurePosixPath(container_dest)
+        if not dest.is_absolute():
+            raise ValueError(f"container dest must be absolute: {container_dest}")
+
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as tar:
+            for file_path in sorted(src.rglob("*")):
+                rel = file_path.relative_to(src)
+                arcname = str(rel)
+                tar.add(str(file_path), arcname=arcname)
+
+        stream.seek(0)
+        try:
+            ok = container.put_archive(str(dest), stream.getvalue())
+        except DockerException as exc:
+            raise RuntimeError(f"failed to copy directory to {container_dest}: {exc}") from exc
+        if not ok:
+            raise RuntimeError(f"failed to copy directory to {container_dest}")
+        LOG.info("copied local directory to container=%s src=%s dest=%s", container_name, local_path, container_dest)
+
     def remove_container(self, name: str, *, force: bool = True) -> None:
         container = self._get_container(name)
         if container is None:
@@ -265,7 +304,7 @@ class ContainerManager:
         return status_code == 409 or "is already in use" in explanation
 
     @staticmethod
-    def _text_file_archive(path: str, content: str) -> tuple[str, bytes]:
+    def _build_file_archive(path: str, payload: bytes) -> tuple[str, bytes]:
         target = PurePosixPath(path)
         if not target.is_absolute() or target.name in ("", ".", ".."):
             raise ValueError(f"container file path must be absolute: {path}")
@@ -279,7 +318,6 @@ class ContainerManager:
             archive_path = f"/{parts[0]}"
             archive_parts = parts[1:]
 
-        payload = content.encode("utf-8")
         stream = io.BytesIO()
         with tarfile.open(fileobj=stream, mode="w") as archive:
             parent = ""
@@ -296,3 +334,11 @@ class ContainerManager:
             info.mode = 0o644
             archive.addfile(info, io.BytesIO(payload))
         return archive_path, stream.getvalue()
+
+    @staticmethod
+    def _text_file_archive(path: str, content: str) -> tuple[str, bytes]:
+        return ContainerManager._build_file_archive(path, content.encode("utf-8"))
+
+    @staticmethod
+    def _binary_file_archive(path: str, data: bytes) -> tuple[str, bytes]:
+        return ContainerManager._build_file_archive(path, data)

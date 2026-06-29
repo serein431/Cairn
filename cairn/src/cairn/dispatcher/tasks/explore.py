@@ -19,6 +19,7 @@ from cairn.dispatcher.tasks.common import (
     run_healthcheck,
     run_worker_process,
     save_session_log,
+    scan_workspace_files,
     task_healthcheck_enabled,
     write_conclude_result,
     write_graph_snapshot_reference,
@@ -46,6 +47,9 @@ def run_explore_task(
     lease.start()
     try:
         container_name = container_manager.ensure_running(project.project.id)
+
+        from cairn.dispatcher.tasks.bootstrap import _inject_init_files
+        _inject_init_files(container_manager, container_name, project)
 
         if task_healthcheck_enabled(config):
             LOG.info(
@@ -97,6 +101,13 @@ def run_explore_task(
                 best_effort_release(client, project.project.id, intent.id, worker.name)
                 return "unhealthy"
 
+        workspace_listing = scan_workspace_files(container_manager, container_name)
+        workspace_section = (
+            f"\n## Workspace Files\nFiles from prior sessions in this container:\n```\n{workspace_listing}\n```\n"
+            if workspace_listing
+            else ""
+        )
+
         prompt = render_prompt(
             load_prompt(config.runtime.prompt_group, "explore.md"),
             {
@@ -108,6 +119,7 @@ def run_explore_task(
                 ),
                 "intent_id": intent.id,
                 "intent_description": intent.description,
+                "workspace_files": workspace_section,
             },
         )
 
